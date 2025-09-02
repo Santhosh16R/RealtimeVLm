@@ -2,52 +2,102 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>FastVLM WebGPU Demo</title>
+  <title>FastVLM-ONNX WebGPU Demo (Single HTML)</title>
+  <style>
+    body { font-family: sans-serif; background: #121212; color: #eee; text-align: center; padding: 20px; }
+    video { width: 100%; max-width: 600px; border-radius: 8px; background: #000; }
+    textarea { width: 100%; max-width: 600px; margin: 10px 0; padding: 10px; border-radius: 6px; background: #222; color: #eee; height: 80px; }
+    button { margin: 5px; padding: 10px 15px; border: none; border-radius: 6px; background: #0066ff; color: #fff; cursor: pointer; }
+    #output { width: 100%; max-width: 600px; text-align: left; white-space: pre-wrap; background: #222; padding: 15px; border-radius: 6px; min-height: 100px; }
+    #status { margin-bottom: 10px; opacity: 0.8; }
+  </style>
 </head>
 <body>
-  <h2>FastVLM (ONNX, WebGPU)</h2>
+  <h1>FastVLM-ONNX WebGPU Demo</h1>
+  <div id="status">Status: Initializing…</div>
+  <video id="webcam" autoplay muted playsinline></video>
+  <textarea id="instruction" placeholder="Ask a question (e.g., What is happening?"></textarea>
+  <div>
+    <button id="btn-perm">Grant Webcam</button>
+    <button id="btn-start" disabled>Start Captioning</button>
+    <button id="btn-stop" disabled>Stop</button>
+  </div>
+  <div id="output">Output will appear here...</div>
 
-  <input type="file" id="imageInput" accept="image/*">
-  <input type="text" id="question" placeholder="Ask about the image" size="50">
-  <button id="runBtn">Run</button>
-
-  <p><strong>Answer:</strong> <span id="output"></span></p>
-
-  <!-- Hugging Face Transformers.js (ESM build) -->
   <script type="module">
-    import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/esm/transformers.min.js";
+    import { pipeline, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/esm/transformers.min.js';
 
-    let vlm;
+    const statusEl = document.getElementById('status');
+    const video = document.getElementById('webcam');
+    const out = document.getElementById('output');
+    const instructionEl = document.getElementById('instruction');
+    const btnPerm = document.getElementById('btn-perm');
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
 
-    async function loadModel() {
-      document.getElementById("output").innerText = "Loading model...";
-      vlm = await pipeline(
-        "image-text-to-text",
-        "onnx-community/FastVLM-0.5B-ONNX",
-        { device: "webgpu" }  // try WebGPU, fallback to CPU
-      );
-      document.getElementById("output").innerText = "Model loaded. Ready!";
-    }
+    let vlm, running = false, inferenceLock = false;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    async function runInference() {
-      const fileInput = document.getElementById("imageInput");
-      const question = document.getElementById("question").value;
-      if (!fileInput.files[0] || !question) {
-        alert("Please select an image and enter a question.");
-        return;
+    const updateStatus = (t) => statusEl.textContent = `Status: ${t}`;
+
+    btnPerm.onclick = async () => {
+      try {
+        updateStatus('Requesting webcam…');
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        await video.play();
+        btnStart.disabled = false;
+        updateStatus('Webcam granted');
+      } catch (e) {
+        updateStatus('Webcam denied');
+        console.error(e);
       }
+    };
 
-      const imageBlob = fileInput.files[0];
-      document.getElementById("output").innerText = "Running...";
+    btnStart.onclick = () => {
+      running = true;
+      btnPerm.disabled = btnStart.disabled = true;
+      btnStop.disabled = false;
+      updateStatus('Loading model…');
+      startPipelineAndLoop();
+    };
 
-      const result = await vlm(imageBlob, { prompt: question });
-      document.getElementById("output").innerText = result[0].generated_text;
+    btnStop.onclick = () => {
+      running = false;
+      btnStop.disabled = true;
+      btnPerm.disabled = false;
+      updateStatus('Stopped');
+    };
+
+    async function startPipelineAndLoop() {
+      vlm = await pipeline('image-text-to-text', 'onnx-community/FastVLM-0.5B-ONNX', { device: navigator.gpu ? 'webgpu' : 'wasm' });
+      updateStatus('Model loaded — Captioning');
+      loop();
     }
 
-    document.getElementById("runBtn").addEventListener("click", runInference);
+    async function loop() {
+      if (!running || inferenceLock) return;
+      inferenceLock = true;
 
-    // Load model on page start
-    loadModel();
+      // Capture frame
+      canvas.width = video.videoWidth || 480;
+      canvas.height = video.videoHeight || 360;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const streamer = new TextStreamer(vlm.tokenizer, {
+        skip_prompt: true,
+        skip_special_tokens: true,
+        callback_function: t => out.textContent = t.trim(),
+      });
+
+      await vlm(canvas, { prompt: instructionEl.value || 'Describe this scene.' , streamer });
+      inferenceLock = false;
+
+      setTimeout(() => running && loop(), 1500);
+    }
+
+    updateStatus('Ready. Grant webcam to begin.');
   </script>
 </body>
 </html>
