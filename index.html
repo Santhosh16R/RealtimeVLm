@@ -1,144 +1,57 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FastVLM WebGPU Demo</title>
+  <meta charset="UTF-8" />
+  <title>FastVLM Webcam Demo</title>
   <style>
-    body { margin:0; font:16px system-ui,sans-serif; background:#0b0f17; color:#e6edf3; }
-    .wrap { display:flex; flex-direction:column; align-items:center; padding:20px; gap:12px; }
-    video { width:100%; max-width:640px; border-radius:12px; background:#000; }
-    textarea { width:100%; max-width:640px; height:60px; padding:8px; border-radius:8px; background:#111; color:#eee; }
-    button { padding:10px 14px; border-radius:8px; background:#1f6feb; color:white; border:0; cursor:pointer; margin:4px; }
-    #output { max-width:640px; white-space:pre-wrap; background:#111; border:1px solid #333; padding:12px; border-radius:8px; min-height:2lh; }
-    #status { opacity:0.8; }
+    video { width: 320px; border: 1px solid #ccc; }
+    #output { margin-top: 10px; font-family: sans-serif; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h2>FastVLM WebGPU (Single HTML)</h2>
-    <div id="status">Status: idle</div>
-    <video id="webcam" autoplay muted playsinline></video>
-    <textarea id="instruction" placeholder="Ask (e.g., Describe what you see)"></textarea>
-    <div>
-      <button id="btn-permission">Grant Webcam</button>
-      <button id="btn-load" disabled>Load Model</button>
-      <button id="btn-start" disabled>Start</button>
-      <button id="btn-stop" disabled>Stop</button>
-    </div>
-    <div id="output"></div>
-  </div>
+  <h2>FastVLM Webcam Demo</h2>
+  <video id="webcam" autoplay></video>
+  <div id="output">Loading model...</div>
 
-  <script type="module">
-    import {
-      AutoProcessor,
-      AutoModelForImageTextToText,
-      RawImage,
-      TextStreamer,
-    } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/esm/transformers.min.js";
+  <!-- Hugging Face Transformers.js IIFE bundle -->
+  <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/transformers.min.js"></script>
+  <script>
+    const { pipeline } = window.transformers;
+    let pipe;
 
-    const MODEL_ID = "onnx-community/FastVLM-0.5B-ONNX";
-    const status = (t) => (document.getElementById("status").textContent = "Status: " + t);
-    const video = document.getElementById("webcam");
-    const out = document.getElementById("output");
-    const instructionEl = document.getElementById("instruction");
-    const btnPerm = document.getElementById("btn-permission");
-    const btnLoad = document.getElementById("btn-load");
-    const btnStart = document.getElementById("btn-start");
-    const btnStop = document.getElementById("btn-stop");
+    async function loadPipeline() {
+      pipe = await pipeline("image-to-text", "apple/FastVLM-0.5B");
+      document.getElementById("output").innerText = "FastVLM loaded!";
+      startWebcam();
+    }
 
-    let processor, model, stream, running = false, inferenceLock = false;
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    async function startWebcam() {
+      const video = document.getElementById("webcam");
+      const output = document.getElementById("output");
 
-    btnPerm.onclick = async () => {
       try {
-        status("requesting webcam");
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         video.srcObject = stream;
-        await video.play();
-        btnLoad.disabled = false;
-        status("webcam ready");
-      } catch (e) {
-        status("webcam denied");
-        console.error(e);
+        video.onloadedmetadata = () => {
+          video.play();
+          processFrame(video, output);
+        };
+      } catch (err) {
+        output.innerText = "Error accessing webcam: " + err;
       }
-    };
-
-    btnLoad.onclick = async () => {
-      try {
-        status("loading processor…");
-        processor = await AutoProcessor.from_pretrained(MODEL_ID);
-        status("loading model…");
-        model = await AutoModelForImageTextToText.from_pretrained(MODEL_ID, {
-          dtype: { embed_tokens: "fp16", vision_encoder: "q4", decoder_model_merged: "q4" },
-          device: navigator.gpu ? "webgpu" : "wasm",
-        });
-        btnStart.disabled = false;
-        status("model loaded");
-      } catch (e) {
-        status("load failed");
-        console.error(e);
-      }
-    };
-
-    btnStart.onclick = () => {
-      running = true;
-      btnStop.disabled = false;
-      status("captioning…");
-      loop();
-    };
-    btnStop.onclick = () => {
-      running = false;
-      status("stopped");
-    };
-
-    async function inferOne(instruction) {
-      if (inferenceLock || !processor || !model) return;
-      inferenceLock = true;
-
-      // draw video frame to canvas
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const rawImg = new RawImage(frame.data, frame.width, frame.height, 4);
-
-      const messages = [
-        { role: "system", content: "You are a helpful visual AI. Answer concisely." },
-        { role: "user", content: `<image>${instruction || "Describe the scene."}` },
-      ];
-      const prompt = processor.apply_chat_template(messages, { add_generation_prompt: true });
-      const inputs = await processor(rawImg, prompt, { add_special_tokens: false });
-
-      let streamed = "";
-      const streamer = new TextStreamer(processor.tokenizer, {
-        skip_prompt: true,
-        skip_special_tokens: true,
-        callback_function: (t) => {
-          streamed += t;
-          out.textContent = streamed.trim();
-        },
-      });
-
-      await model.generate({
-        ...inputs,
-        max_new_tokens: 128,
-        do_sample: false,
-        repetition_penalty: 1.2,
-        streamer,
-      });
-
-      inferenceLock = false;
     }
 
-    async function loop() {
-      if (!running) return;
-      await inferOne(instructionEl.value);
-      setTimeout(loop, 2000); // every 2s
+    async function processFrame(video, outputDiv) {
+      if (pipe) {
+        const result = await pipe(video);
+        if (result && result.length > 0) {
+          outputDiv.innerText = result[0].generated_text;
+        }
+      }
+      requestAnimationFrame(() => processFrame(video, outputDiv));
     }
 
-    status("idle");
+    loadPipeline();
   </script>
 </body>
 </html>
