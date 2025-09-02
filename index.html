@@ -2,27 +2,36 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>FastVLM Webcam Demo</title>
+  <title>FastVLM WebGPU Demo</title>
   <style>
-    video { width: 320px; border: 1px solid #ccc; }
-    #output { margin-top: 10px; font-family: sans-serif; }
+    body { font-family: sans-serif; text-align: center; }
+    video { width: 320px; border: 1px solid #ccc; margin-top: 10px; }
+    #output { margin-top: 15px; font-size: 18px; }
   </style>
 </head>
 <body>
-  <h2>FastVLM Webcam Demo</h2>
-  <video id="webcam" autoplay></video>
-  <div id="output">Loading model...</div>
+  <h2>FastVLM WebGPU Demo</h2>
+  <video id="webcam" autoplay muted></video>
+  <div id="output">Loading model on WebGPU...</div>
 
-  <!-- Hugging Face Transformers.js IIFE bundle -->
+  <!-- Hugging Face Transformers.js bundle -->
   <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/transformers.min.js"></script>
   <script>
     const { pipeline } = window.transformers;
     let pipe;
 
     async function loadPipeline() {
-      pipe = await pipeline("image-to-text", "apple/FastVLM-0.5B");
-      document.getElementById("output").innerText = "FastVLM loaded!";
-      startWebcam();
+      try {
+        pipe = await pipeline(
+          "image-to-text",
+          "apple/fastvlm-webgpu",   // WebGPU-optimized version
+          { device: "webgpu" }      // Force WebGPU backend
+        );
+        document.getElementById("output").innerText = "FastVLM (WebGPU) loaded!";
+        startWebcam();
+      } catch (err) {
+        document.getElementById("output").innerText = "Error loading model: " + err;
+      }
     }
 
     async function startWebcam() {
@@ -43,9 +52,13 @@
 
     async function processFrame(video, outputDiv) {
       if (pipe) {
-        const result = await pipe(video);
-        if (result && result.length > 0) {
-          outputDiv.innerText = result[0].generated_text;
+        try {
+          const result = await pipe(video);
+          if (result && result.length > 0) {
+            outputDiv.innerText = result[0].generated_text;
+          }
+        } catch (err) {
+          outputDiv.innerText = "Error during inference: " + err;
         }
       }
       requestAnimationFrame(() => processFrame(video, outputDiv));
