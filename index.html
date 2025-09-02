@@ -2,87 +2,51 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>FastVLM ONNX WebGPU Demo</title>
-  <style>
-    body { font-family: sans-serif; text-align: center; }
-    video { width: 320px; border: 1px solid #ccc; margin-top: 10px; }
-    #output { margin-top: 15px; font-size: 18px; }
-  </style>
+  <title>FastVLM WebGPU Demo</title>
 </head>
 <body>
-  <h2>FastVLM 0.5B (ONNX, WebGPU)</h2>
-  <video id="webcam" autoplay muted></video>
-  <div id="output">Loading ONNX model on WebGPU...</div>
+  <h2>FastVLM (ONNX, WebGPU)</h2>
 
-  <!-- Load ONNX Runtime Web -->
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
-  <script>
-    const MODEL_ID = "https://huggingface.co/onnx-community/FastVLM-0.5B-ONNX/resolve/main/model.onnx";
-    let session;
+  <input type="file" id="imageInput" accept="image/*">
+  <input type="text" id="question" placeholder="Ask about the image" size="50">
+  <button id="runBtn">Run</button>
+
+  <p><strong>Answer:</strong> <span id="output"></span></p>
+
+  <!-- Hugging Face Transformers.js (ESM build) -->
+  <script type="module">
+    import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/esm/transformers.min.js";
+
+    let vlm;
 
     async function loadModel() {
-      try {
-        session = await ort.InferenceSession.create(MODEL_ID, {
-          executionProviders: ["webgpu"] // Use WebGPU backend
-        });
-        document.getElementById("output").innerText = "Model loaded on WebGPU!";
-        startWebcam();
-      } catch (err) {
-        document.getElementById("output").innerText = "Error loading model: " + err;
-      }
+      document.getElementById("output").innerText = "Loading model...";
+      vlm = await pipeline(
+        "image-text-to-text",
+        "onnx-community/FastVLM-0.5B-ONNX",
+        { device: "webgpu" }  // try WebGPU, fallback to CPU
+      );
+      document.getElementById("output").innerText = "Model loaded. Ready!";
     }
 
-    async function startWebcam() {
-      const video = document.getElementById("webcam");
-      const output = document.getElementById("output");
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-          video.play();
-          processFrame(video, output);
-        };
-      } catch (err) {
-        output.innerText = "Error accessing webcam: " + err;
+    async function runInference() {
+      const fileInput = document.getElementById("imageInput");
+      const question = document.getElementById("question").value;
+      if (!fileInput.files[0] || !question) {
+        alert("Please select an image and enter a question.");
+        return;
       }
+
+      const imageBlob = fileInput.files[0];
+      document.getElementById("output").innerText = "Running...";
+
+      const result = await vlm(imageBlob, { prompt: question });
+      document.getElementById("output").innerText = result[0].generated_text;
     }
 
-    async function processFrame(video, outputDiv) {
-      if (!session) return;
+    document.getElementById("runBtn").addEventListener("click", runInference);
 
-      // Create a canvas to grab the current frame
-      const canvas = document.createElement("canvas");
-      canvas.width = 224;
-      canvas.height = 224;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, 224, 224);
-
-      // Preprocess into Float32 tensor (normalize like ImageNet)
-      const imgData = ctx.getImageData(0, 0, 224, 224);
-      const data = new Float32Array(224 * 224 * 3);
-      for (let i = 0; i < 224 * 224; i++) {
-        data[i * 3 + 0] = imgData.data[i * 4 + 0] / 255.0;
-        data[i * 3 + 1] = imgData.data[i * 4 + 1] / 255.0;
-        data[i * 3 + 2] = imgData.data[i * 4 + 2] / 255.0;
-      }
-
-      const tensor = new ort.Tensor("float32", data, [1, 3, 224, 224]);
-
-      try {
-        const results = await session.run({ pixel_values: tensor });
-        // The output key depends on the model export
-        const outputKey = Object.keys(results)[0];
-        const logits = results[outputKey].data;
-
-        outputDiv.innerText = "Inference done. Logits length: " + logits.length;
-      } catch (err) {
-        outputDiv.innerText = "Error during inference: " + err;
-      }
-
-      requestAnimationFrame(() => processFrame(video, outputDiv));
-    }
-
+    // Load model on page start
     loadModel();
   </script>
 </body>
